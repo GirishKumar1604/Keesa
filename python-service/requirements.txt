@@ -1,0 +1,5 @@
+flask
+scikit-learn
+faiss-cpu
+numpy
+pandas

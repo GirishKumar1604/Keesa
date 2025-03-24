@@ -1,0 +1,6 @@
+{
+    "watch": ["routes", "services", "config", "controllers", "models"],
+    "ignore": ["python-service/venv/*", "data/*", "node_modules/*"],
+    "ext": "js,json"
+  }
+  
