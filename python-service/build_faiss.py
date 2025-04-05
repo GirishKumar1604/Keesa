@@ -1,38 +1,37 @@
+# build_faiss.py
 import faiss
-import numpy as np
 import pandas as pd
+import numpy as np
+import pickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 import os
-import pickle
 
-# ✅ File Paths
+# ✅ File paths
 MERCHANT_FILE = os.path.join(os.path.dirname(__file__), "../data/merchant.csv")
-INDEX_FILE = os.path.join(os.path.dirname(__file__), "faiss.index")
-VECTOR_FILE = os.path.join(os.path.dirname(__file__), "vectorizer.pkl")
-MERCHANT_NAMES_FILE = os.path.join(os.path.dirname(__file__), "merchant_names.pkl")
+VECTORIZER_PATH = os.path.join(os.path.dirname(__file__), "vectorizer.pkl")
+INDEX_PATH = os.path.join(os.path.dirname(__file__), "faiss.index")
 
-# ✅ Load Merchant Data
-print("📥 Loading merchant data...")
-merchant_df = pd.read_csv(MERCHANT_FILE)
-merchant_names = merchant_df['merchant_name'].str.lower().tolist()
+# ✅ Load merchant names
+print("📥 Loading merchants...")
+df = pd.read_csv(MERCHANT_FILE)
+merchant_names = df['merchant_name'].fillna("").str.lower().tolist()
+print(f"✅ Loaded {len(merchant_names)} merchants.")
 
-# ✅ Build Vectorizer with Same Settings as Training
-vectorizer = TfidfVectorizer(max_features=768)  # Match training size
-X = vectorizer.fit_transform(merchant_names).toarray()
+# ✅ Create TF-IDF embeddings
+print("🧠 Generating TF-IDF embeddings...")
+vectorizer = TfidfVectorizer()
+X = vectorizer.fit_transform(merchant_names)
 
-# ✅ Ensure FAISS Index Dimension Matches Vectorizer Output Size
-dimension = X.shape[1]
-print(f"✅ FAISS index dimension: {dimension}")
+# ✅ Convert to dense numpy array
+embeddings = X.toarray().astype("float32")
 
-# ✅ Create FAISS Index
-index = faiss.IndexFlatL2(dimension)
-index.add(X.astype('float32'))
-
-# ✅ Save Index and Vectorizer
-faiss.write_index(index, INDEX_FILE)
-with open(VECTOR_FILE, 'wb') as f:
+# ✅ Save vectorizer
+with open(VECTORIZER_PATH, "wb") as f:
     pickle.dump(vectorizer, f)
-with open(MERCHANT_NAMES_FILE, 'wb') as f:
-    pickle.dump(merchant_names, f)
+print(f"✅ Vectorizer saved to {VECTORIZER_PATH}")
 
-print(f"✅ FAISS Index built with {len(merchant_names)} merchants.")
+# ✅ Build FAISS index
+index = faiss.IndexFlatL2(embeddings.shape[1])
+index.add(embeddings)
+faiss.write_index(index, INDEX_PATH)
+print(f"✅ FAISS index saved to {INDEX_PATH}")

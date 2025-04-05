@@ -1,108 +1,143 @@
+import os
+import re
 import faiss
+import pickle
 import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify
-import pickle
-import os
-import re
 
-# ✅ Paths to models and index
+# === Config Paths ===
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
 VECTORIZER_PATH = os.path.join(os.path.dirname(__file__), "vectorizer.pkl")
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "faiss.index")
-MERCHANT_NAMES_PATH = os.path.join(os.path.dirname(__file__), "merchant_names.pkl")
-SIMILARITY_THRESHOLD = 0.35
+MERCHANT_FILE = os.path.join(os.path.dirname(__file__), "../data/merchant.csv")
 
-# ✅ Flask app setup
+# === Parameters ===
+SIMILARITY_THRESHOLD = 0.35
+LABEL_MAP = {0: 'credit', 1: 'fraud', 2: 'balance_update', 3: 'refund', 4: 'failed'}
+
+# === App Initialization ===
 app = Flask(__name__)
 
-# ✅ Load ML Model
-print("📥 Loading ML Model...")
-with open(MODEL_PATH, 'rb') as f:
-    model = pickle.load(f)
+# === Load ML Model ===
+print("📥 Loading XGBoost model...")
+try:
+    with open(MODEL_PATH, "rb") as f:
+        model = pickle.load(f)
+    print("✅ Loaded XGBoost Model!")
+except Exception as e:
+    print(f"❌ Failed to load model: {e}")
+    model = None
 
-# ✅ Load Vectorizer
-print("📥 Loading Vectorizer...")
-with open(VECTORIZER_PATH, 'rb') as f:
-    vectorizer = pickle.load(f)
+# === Load Vectorizer ===
+print("📥 Loading TF-IDF vectorizer...")
+try:
+    with open(VECTORIZER_PATH, "rb") as f:
+        vectorizer = pickle.load(f)
+    print("✅ Loaded TF-IDF Vectorizer!")
+except Exception as e:
+    print(f"❌ Failed to load vectorizer: {e}")
+    vectorizer = None
 
-# ✅ Load FAISS Index
-print("📥 Loading FAISS Index...")
-index = faiss.read_index(INDEX_PATH)
+# === Load FAISS Index ===
+print("📥 Loading FAISS index...")
+try:
+    index = faiss.read_index(INDEX_PATH)
+    print("✅ Loaded FAISS Index!")
+except Exception as e:
+    print(f"❌ Failed to load FAISS index: {e}")
+    index = faiss.IndexFlatL2(1)  # Dummy fallback
 
-# ✅ Load Merchant Names
-print("📥 Loading Merchant Names...")
-with open(MERCHANT_NAMES_PATH, 'rb') as f:
-    merchant_names = pickle.load(f)
+# === Load Merchant Names ===
+print("📥 Loading merchants...")
+try:
+    merchant_df = pd.read_csv(MERCHANT_FILE)
+    merchant_names = merchant_df['merchant_name'].str.lower().tolist()
+    print(f"✅ Loaded {len(merchant_names)} merchants.")
+except Exception as e:
+    print(f"❌ Failed to load merchant names: {e}")
+    merchant_names = []
 
-# ✅ Fix for Extracting Transaction Amount
+# === Utility Functions ===
+
 def extract_amount(message):
     match = re.search(r'(?i)(?:rs\.?|inr\.?|₹)?\s*([\d,]+\.\d{2})', message)
     if match:
         return float(match.group(1).replace(',', ''))
     return None
 
-# ✅ Fix for Input Vector Shape Mismatch
-def validate_input_vector(input_vector):
-    if input_vector.shape[1] != index.d:
-        raise ValueError(f"Vector shape mismatch: Expected {index.d}, got {input_vector.shape[1]}")
-    return input_vector.astype('float32')
+def clean_text(text):
+    if isinstance(text, str):
+        return text.strip().lower()
+    return str(text)
+
+# === API Endpoint ===
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        sms = request.json.get('sms')
+        print("🔧 Step 1: Getting JSON data...")
+        data = request.get_json(force=True)
+        print(f"📦 Raw Data: {data}")
+
+        sms = data.get("sms", "").strip()
         if not sms:
+            print("❌ No SMS provided or empty.")
             return jsonify({"success": False, "error": "No SMS provided"}), 400
-        
-        print(f"📩 Incoming SMS: {sms}")
 
-        # ✅ Vectorize Input SMS
+        print(f"📩 SMS received: {sms}")
+
+        # Step 2: Vectorization
+        print("🔧 Step 2: Vectorizing SMS...")
         input_vector = vectorizer.transform([sms]).toarray()
-        input_vector = pd.DataFrame(input_vector, columns=vectorizer.get_feature_names_out())
+        print(f"📊 Vector shape: {input_vector.shape}")
 
-        # ✅ Predict Transaction Type
+        # Step 3: XGBoost Prediction
+        print("🔧 Step 3: Running XGBoost prediction...")
         prediction = model.predict(input_vector)[0]
+        prediction_label = LABEL_MAP.get(prediction, "unknown")
+        print(f"🔮 Prediction: {prediction} → {prediction_label}")
 
-        # ✅ FAISS Search for Merchant Match
-        distances, indices = index.search(input_vector.to_numpy().astype('float32'), 1)
-        similarity_score = distances[0][0]
+        # Step 4: FAISS Similarity
+        print("🔧 Step 4: FAISS similarity search...")
+        try:
+            if index.ntotal == 0:
+                raise ValueError("FAISS index is empty!")
 
-        # ✅ Fix FAISS Output Index Mismatch
-        if similarity_score > SIMILARITY_THRESHOLD:
-            merchant_index = indices[0][0]
-            print(f"🔍 FAISS Returned Index: {merchant_index}")
-            if 0 <= merchant_index < len(merchant_names):
-                merchant_match = merchant_names[merchant_index]
-            else:
+            distances, indices = index.search(input_vector.astype("float32"), 1)
+            similarity_score = distances[0][0]
+
+            if similarity_score < SIMILARITY_THRESHOLD:
+                print(f"⚠️ Similarity too low ({similarity_score:.4f}) — merchant unknown")
                 merchant_match = "Unknown"
-            print(f"✅ Merchant Match: {merchant_match} (Score: {similarity_score:.2f})")
-        else:
+            else:
+                merchant_match = merchant_names[indices[0][0]]
+                print(f"✅ Merchant Match: {merchant_match} (score: {similarity_score:.4f})")
+        except Exception as faiss_error:
+            print(f"❌ FAISS Error: {faiss_error}")
             merchant_match = "Unknown"
-            print(f"❌ Similarity too low: {similarity_score:.2f}")
 
-        # ✅ Extract Amount
+        # Step 5: Extract amount
+        print("🔧 Step 5: Extracting amount...")
         amount = extract_amount(sms)
+        print(f"💰 Amount: {amount}")
 
-        # ✅ Construct Response
+        # Step 6: Final Response
+        print("🔧 Step 6: Building response...")
         result = {
-            "amount": amount if amount else None,
-            "transactionType": int(prediction), 
-            "merchant": merchant_match,
-            "referenceNumber": "1234567890"
+            "amount": amount,
+            "transactionType": clean_text(prediction_label),
+            "merchant": clean_text(merchant_match),
+            "referenceNumber": "1234567890"  # Placeholder
         }
 
-        print(f"✅ Prediction Result: {result}")
+        print(f"✅ Final Output: {result}")
         return jsonify({"success": True, "data": result})
 
-    except ValueError as e:
-        print(f"❌ Value Error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 400
-
     except Exception as e:
-        print(f"❌ Error in prediction: {e}")
+        print(f"❌ Exception occurred: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ✅ Run Flask App
-if __name__ == '__main__':
+# === Run Flask App ===
+if __name__ == "__main__":
     app.run(port=5001, debug=True)

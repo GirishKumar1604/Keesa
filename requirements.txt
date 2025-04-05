@@ -14,5 +14,3 @@ pandas>=1.3.0
 # Web framework (if your app.py uses Flask)
 Flask>=2.0.2
 
-# Uncomment below if your project uses PyTorch for model training
-# torch>=1.10.0
